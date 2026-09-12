@@ -22,29 +22,24 @@ dotenv.config()
 const ignoredFiles = ['pages/404.mdx']
 
 function getObjectFromExpression(node: ObjectExpression) {
-  return node.properties.reduce<
-    Record<string, string | number | bigint | true | RegExp | undefined>
-  >((object, property) => {
-    if (property.type !== 'Property') return object
-
-    const key = (property.key.type === 'Identifier' && property.key.name) || undefined
-    const value = (property.value.type === 'Literal' && property.value.value) || undefined
-    if (!key) return object
-
-    return { ...object, [key]: value }
-  }, {})
+  return node.properties.reduce<Record<string, string | number | bigint | true | RegExp | undefined>>(
+    (object, property) => {
+      if (property.type !== 'Property') return object
+      const key = (property.key.type === 'Identifier' && property.key.name) || undefined
+      const value = (property.value.type === 'Literal' && property.value.value) || undefined
+      if (!key) return object
+      return { ...object, [key]: value }
+    }, {})
 }
 
 function extractMetaExport(mdxTree: Root) {
-  const metaExportNode = mdxTree.children.find((node): node is MdxjsEsm => {
-    return (
-      node.type === 'mdxjsEsm' &&
-      node.data?.estree?.body[0]?.type === 'ExportNamedDeclaration' &&
-      node.data.estree.body[0].declaration?.type === 'VariableDeclaration' &&
-      node.data.estree.body[0].declaration.declarations[0]?.id.type === 'Identifier' &&
-      node.data.estree.body[0].declaration.declarations[0].id.name === 'meta'
-    )
-  })
+  const metaExportNode = mdxTree.children.find((node): node is MdxjsEsm =>
+    node.type === 'mdxjsEsm' &&
+    node.data?.estree?.body[0]?.type === 'ExportNamedDeclaration' &&
+    node.data.estree.body[0].declaration?.type === 'VariableDeclaration' &&
+    node.data.estree.body[0].declaration.declarations[0]?.id.type === 'Identifier' &&
+    node.data.estree.body[0].declaration.declarations[0].id.name === 'meta'
+  )
 
   if (!metaExportNode) return undefined
 
@@ -53,10 +48,8 @@ function extractMetaExport(mdxTree: Root) {
       metaExportNode.data.estree.body[0].declaration?.type === 'VariableDeclaration' &&
       metaExportNode.data.estree.body[0].declaration.declarations[0]?.id.type === 'Identifier' &&
       metaExportNode.data.estree.body[0].declaration.declarations[0].id.name === 'meta' &&
-      metaExportNode.data.estree.body[0].declaration.declarations[0].init?.type ===
-        'ObjectExpression' &&
-      metaExportNode.data.estree.body[0].declaration.declarations[0].init) ||
-    undefined
+      metaExportNode.data.estree.body[0].declaration.declarations[0].init?.type === 'ObjectExpression' &&
+      metaExportNode.data.estree.body[0].declaration.declarations[0].init) || undefined
 
   if (!objectExpression) return undefined
   return getObjectFromExpression(objectExpression)
@@ -77,15 +70,11 @@ type ProcessedMdx = { checksum: string; meta: Meta; sections: Section[] }
 
 function processMdxForSearch(content: string): ProcessedMdx {
   const checksum = createHash('sha256').update(content).digest('base64')
-  const mdxTree = fromMarkdown(content, {
-    extensions: [mdxjs()],
-    mdastExtensions: [mdxFromMarkdown()],
-  })
+  const mdxTree = fromMarkdown(content, { extensions: [mdxjs()], mdastExtensions: [mdxFromMarkdown()] })
   const meta = extractMetaExport(mdxTree)
   const mdTree = filter(mdxTree, (node) =>
     !['mdxjsEsm', 'mdxJsxFlowElement', 'mdxJsxTextElement', 'mdxFlowExpression', 'mdxTextExpression'].includes(node.type)
   )
-
   if (!mdTree) return { checksum, meta, sections: [] }
 
   const sectionTrees = splitTreeBy(mdTree, (node) => node.type === 'heading')
@@ -95,7 +84,6 @@ function processMdxForSearch(content: string): ProcessedMdx {
     const heading = firstNode.type === 'heading' ? toString(firstNode) : undefined
     return { content: toMarkdown(tree), heading, slug: heading ? slugger.slug(heading) : undefined }
   })
-
   return { checksum, meta, sections }
 }
 
@@ -103,18 +91,16 @@ type WalkEntry = { path: string; parentPath?: string }
 
 async function walk(dir: string, parentPath?: string): Promise<WalkEntry[]> {
   const immediateFiles = await readdir(dir)
-  const recursiveFiles = await Promise.all(
-    immediateFiles.map(async (file) => {
-      const path = join(dir, file)
-      const stats = await stat(path)
-      if (stats.isDirectory()) {
-        const docPath = `${basename(path)}.mdx`
-        return walk(path, immediateFiles.includes(docPath) ? join(dirname(path), docPath) : parentPath)
-      }
-      if (stats.isFile()) return [{ path, parentPath }]
-      return []
-    })
-  )
+  const recursiveFiles = await Promise.all(immediateFiles.map(async (file) => {
+    const path = join(dir, file)
+    const stats = await stat(path)
+    if (stats.isDirectory()) {
+      const docPath = `${basename(path)}.mdx`
+      return walk(path, immediateFiles.includes(docPath) ? join(dirname(path), docPath) : parentPath)
+    }
+    if (stats.isFile()) return [{ path, parentPath }]
+    return []
+  }))
   return recursiveFiles.reduce((all, folderContents) => all.concat(folderContents), []).sort((a, b) => a.path.localeCompare(b.path))
 }
 
@@ -125,7 +111,6 @@ class MarkdownEmbeddingSource {
   sections?: Section[]
 
   constructor(public source: string, public filePath: string, public parentFilePath?: string) {}
-
   get path() { return this.filePath.replace(/^pages/, '').replace(/\.mdx?$/, '') }
   get parentPath() { return this.parentFilePath?.replace(/^pages/, '').replace(/\.mdx?$/, '') }
 
@@ -140,16 +125,14 @@ class MarkdownEmbeddingSource {
 }
 
 async function generateEmbeddings() {
-  const argv = await yargs.option('refresh', {
-    alias: 'r', description: 'Refresh data', type: 'boolean',
-  }).argv
+  const argv = await yargs.option('refresh', { alias: 'r', description: 'Refresh data', type: 'boolean' }).argv
   const shouldRefresh = argv.refresh
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
   const openAiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY
 
   if (!supabaseUrl || !supabaseSecretKey || !openAiKey) {
-    return console.log('NEXT_PUBLIC_SUPABASE_URL, a server-only Supabase secret key, and OPENAI_API_KEY are required: skipping embeddings generation')
+    throw new Error('Embedding generation cannot start: NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY (or SUPABASE_SERVICE_ROLE_KEY), and OPENAI_API_KEY are required.')
   }
 
   const supabaseClient = createClient(supabaseUrl, supabaseSecretKey, {
@@ -163,6 +146,9 @@ async function generateEmbeddings() {
     .map((entry) => new MarkdownEmbeddingSource('guide', entry.path, entry.parentPath))
 
   console.log(`Discovered ${embeddingSources.length} pages`)
+  if (embeddingSources.length === 0) throw new Error('Embedding generation found no Markdown/MDX pages under pages/.')
+
+  let failedPages = 0
 
   for (const embeddingSource of embeddingSources) {
     const { type, source, path, parentPath } = embeddingSource
@@ -205,11 +191,16 @@ async function generateEmbeddings() {
       const { error: updateError } = await supabaseClient.from('nods_page').update({ checksum }).filter('id', 'eq', page.id)
       if (updateError) throw updateError
     } catch (err) {
+      failedPages += 1
       console.error(`Failed to index page '${path}'`, err)
     }
   }
 
+  if (failedPages > 0) throw new Error(`Embedding generation failed for ${failedPages} page(s). See the page-specific errors above.`)
   console.log('Embedding generation complete')
 }
 
-generateEmbeddings().catch((err) => console.error(err))
+generateEmbeddings().catch((err) => {
+  console.error(err)
+  process.exitCode = 1
+})
