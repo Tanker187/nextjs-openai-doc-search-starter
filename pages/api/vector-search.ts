@@ -12,68 +12,77 @@ import {
 import { OpenAIStream, StreamingTextResponse } from 'ai'
 import { ApplicationError, UserError } from '@/lib/errors'
 
-const openAiKey = process.env.OPENAI_KEY
+// Server-only credentials. The secret key is never sent to the browser.
+const openAiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
 
 const config = new Configuration({
   apiKey: openAiKey,
 })
 const openai = new OpenAIApi(config)
 
-export const runtime = 'edge'
-
 export default async function handler(req: NextRequest) {
   try {
+    if (req.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json', Allow: 'POST' },
+      })
+    }
+
     if (!openAiKey) {
-      throw new ApplicationError('Missing environment variable OPENAI_KEY')
+      throw new ApplicationError('Missing environment variable OPENAI_API_KEY')
     }
 
     if (!supabaseUrl) {
-      throw new ApplicationError('Missing environment variable SUPABASE_URL')
+      throw new ApplicationError('Missing environment variable NEXT_PUBLIC_SUPABASE_URL')
     }
 
-    if (!supabaseServiceKey) {
-      throw new ApplicationError('Missing environment variable SUPABASE_SERVICE_ROLE_KEY')
+    if (!supabaseSecretKey) {
+      throw new ApplicationError('Missing server-only Supabase secret key')
     }
 
     const requestData = await req.json()
-
     if (!requestData) {
       throw new UserError('Missing request data')
     }
 
-    const { prompt: query } = requestData
-
+    const query = typeof requestData.prompt === 'string' ? requestData.prompt.trim() : ''
     if (!query) {
       throw new UserError('Missing query in request data')
     }
 
-    const supabaseClient = createClient(supabaseUrl, supabaseServiceKey)
+    if (query.length > 4000) {
+      throw new UserError('Query is too long')
+    }
 
-    // Moderate the content to comply with OpenAI T&C
-    const sanitizedQuery = query.trim()
+    const supabaseClient = createClient(supabaseUrl, supabaseSecretKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    })
+
     const moderationResponse: CreateModerationResponse = await openai
-      .createModeration({ input: sanitizedQuery })
+      .createModeration({ input: query })
       .then((res) => res.json())
 
-    const [results] = moderationResponse.results
-
-    if (results.flagged) {
+    const [results] = moderationResponse.results || []
+    if (results?.flagged) {
       throw new UserError('Flagged content', {
         flagged: true,
         categories: results.categories,
       })
     }
 
-    // Create embedding from query
     const embeddingResponse = await openai.createEmbedding({
-      model: 'text-embedding-ada-002',
-      input: sanitizedQuery.replaceAll('\n', ' '),
+      model: 'text-embedding-3-small',
+      input: query.replace(/\n/g, ' '),
     })
 
-    if (embeddingResponse.status !== 200) {
-      throw new ApplicationError('Failed to create embedding for question', embeddingResponse)
+    if (!embeddingResponse.ok) {
+      throw new ApplicationError('Failed to create embedding for question', await embeddingResponse.text())
     }
 
     const {
@@ -94,20 +103,20 @@ export default async function handler(req: NextRequest) {
       throw new ApplicationError('Failed to match page sections', matchError)
     }
 
+    if (!pageSections?.length) {
+      throw new UserError('No matching documentation was found')
+    }
+
     const tokenizer = new GPT3Tokenizer({ type: 'gpt3' })
     let tokenCount = 0
     let contextText = ''
 
-    for (let i = 0; i < pageSections.length; i++) {
-      const pageSection = pageSections[i]
-      const content = pageSection.content
+    for (const pageSection of pageSections) {
+      const content = pageSection.content || ''
       const encoded = tokenizer.encode(content)
       tokenCount += encoded.text.length
 
-      if (tokenCount >= 1500) {
-        break
-      }
-
+      if (tokenCount >= 1500) break
       contextText += `${content.trim()}\n---\n`
     }
 
@@ -125,7 +134,7 @@ export default async function handler(req: NextRequest) {
       ${contextText}
 
       Question: """
-      ${sanitizedQuery}
+      ${query}
       """
 
       Answer as markdown (including related code snippets if available):
@@ -137,7 +146,7 @@ export default async function handler(req: NextRequest) {
     }
 
     const response = await openai.createChatCompletion({
-      model: 'gpt-3.5-turbo',
+      model: 'gpt-4o-mini',
       messages: [chatMessage],
       max_tokens: 512,
       temperature: 0,
@@ -145,44 +154,27 @@ export default async function handler(req: NextRequest) {
     })
 
     if (!response.ok) {
-      const error = await response.json()
-      throw new ApplicationError('Failed to generate completion', error)
+      throw new ApplicationError('Failed to generate completion', await response.text())
     }
 
-    // Transform the response into a readable stream
-    const stream = OpenAIStream(response)
-
-    // Return a StreamingTextResponse, which can be consumed by the client
-    return new StreamingTextResponse(stream)
+    return new StreamingTextResponse(OpenAIStream(response))
   } catch (err: unknown) {
     if (err instanceof UserError) {
       return new Response(
-        JSON.stringify({
-          error: err.message,
-          data: err.data,
-        }),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        }
+        JSON.stringify({ error: err.message, data: err.data }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
       )
-    } else if (err instanceof ApplicationError) {
-      // Print out application errors with their additional data
+    }
+
+    if (err instanceof ApplicationError) {
       console.error(`${err.message}: ${JSON.stringify(err.data)}`)
     } else {
-      // Print out unexpected errors as is to help with debugging
       console.error(err)
     }
 
-    // TODO: include more response info in debug environments
     return new Response(
-      JSON.stringify({
-        error: 'There was an error processing your request',
-      }),
-      {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      }
+      JSON.stringify({ error: 'There was an error processing your request' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
     )
   }
 }
